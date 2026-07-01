@@ -33,10 +33,13 @@ NAKA_HEADERS = {
 #  HEALTH CHECK
 # ══════════════════════════════════════════════════════════════════
 
-@app.get("/")
 @app.get("/health")
+@app.get("/")
 async def health_check():
-    return {"status": "ok", "message": "Nexora FR API is running"}
+    return JSONResponse(
+        status_code=200,
+        content={"status": "ok", "message": "Nexora FR API is running"}
+    )
 
 # ══════════════════════════════════════════════════════════════════
 #  TMDB
@@ -111,7 +114,7 @@ def get_naka_id(title: str, media_type: str, tmdb_id: str) -> str:
     except Exception as e:
         print(f"   ❌ Naka search erreur : {e}")
 
-    print(f"   ⚠️  Naka ID non trouvé, utilisation tmdb_id : {tmdb_id}")
+    print(f"   ⚠️  Naka ID non trouvé, fallback tmdb_id : {tmdb_id}")
     return tmdb_id
 
 # ══════════════════════════════════════════════════════════════════
@@ -180,7 +183,7 @@ async def get_m3u8_url(
             ignore_https_errors=True,
         )
 
-        # Bloque les ressources inutiles pour accélérer
+        # Bloque les ressources inutiles
         await context.route(
             "**/*.{png,jpg,jpeg,gif,webp,woff,woff2,ttf,svg,ico}",
             lambda r: r.abort(),
@@ -193,7 +196,6 @@ async def get_m3u8_url(
 
         page = await context.new_page()
 
-        # Intercepte les requêtes réseau → cherche m3u8
         def on_request(request):
             nonlocal m3u8_found
             url = request.url
@@ -209,12 +211,11 @@ async def get_m3u8_url(
         except Exception as e:
             print(f"   ⚠️  goto erreur (non bloquant) : {e}")
 
-        # Variables de clic
         clicked = {
-            "lecture":  False,
-            "pub1":     False,
-            "pub2":     False,
-            "lancer":   False,
+            "lecture": False,
+            "pub1":    False,
+            "pub2":    False,
+            "lancer":  False,
         }
 
         deadline = time.time() + 60
@@ -223,7 +224,6 @@ async def get_m3u8_url(
             if m3u8_found:
                 break
 
-            # Ferme les onglets pub qui s'ouvrent
             for pg in context.pages:
                 if pg != page:
                     try:
@@ -232,7 +232,6 @@ async def get_m3u8_url(
                     except Exception:
                         pass
 
-            # Clic "Lecture"
             if not clicked["lecture"]:
                 try:
                     el = page.locator("text=Lecture").first
@@ -243,7 +242,6 @@ async def get_m3u8_url(
                 except Exception:
                     pass
 
-            # Clic "Regarder la pub" (x2)
             if not clicked["pub1"]:
                 try:
                     el = page.locator("text=Regarder la pub").first
@@ -263,7 +261,6 @@ async def get_m3u8_url(
                 except Exception:
                     pass
 
-            # Clic "Lancer la lecture"
             if not clicked["lancer"]:
                 try:
                     el = page.locator("text=Lancer la lecture").first
@@ -274,7 +271,6 @@ async def get_m3u8_url(
                 except Exception:
                     pass
 
-            # Ferme les popups / pubs
             for txt in ["Plus tard", "Fermer", "fermer", "plus tard", "SKIP", "Skip"]:
                 try:
                     el = page.locator(f"text={txt}").first
@@ -292,7 +288,7 @@ async def get_m3u8_url(
         print(f"✅ M3U8 trouvé : {m3u8_found}")
         return m3u8_found
 
-    print("❌ M3U8 introuvable après 60 secondes")
+    print("❌ M3U8 introuvable après 60s")
     return None
 
 # ══════════════════════════════════════════════════════════════════
@@ -319,11 +315,11 @@ async def get_tv_stream(tmdb_id: str, season: int, episode: int):
 
 @app.get("/m3u8/{tmdb_id}")
 async def get_stream_legacy(tmdb_id: str):
-    """Route legacy → redirige vers /m3u8/movie/{tmdb_id}"""
     return await get_movie_stream(tmdb_id)
 
+
 # ══════════════════════════════════════════════════════════════════
-#  MAIN
+#  MAIN — uniquement pour dev local
 # ══════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
@@ -335,4 +331,4 @@ if __name__ == "__main__":
     print("   GET /m3u8/tv/{tmdb_id}/{season}/{episode}")
     print("=" * 55)
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run("scraper:app", host="0.0.0.0", port=port)
