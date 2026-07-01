@@ -2,16 +2,11 @@ import time
 import json
 import asyncio
 import requests
-import threading
 from urllib.parse import quote
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
+from playwright.async_api import async_playwright
 import uvicorn
 
 app = FastAPI()
@@ -68,7 +63,7 @@ def get_naka_id(title: str, media_type: str, tmdb_id: str) -> str:
             if isinstance(data, list):
                 results = data
             elif isinstance(data, dict):
-                for key in ["results", "data", "items", "movies", "series", "contents"]:
+                for key in ["results","data","items","movies","series","contents"]:
                     if key in data and isinstance(data[key], list):
                         results = data[key]
                         break
@@ -78,8 +73,8 @@ def get_naka_id(title: str, media_type: str, tmdb_id: str) -> str:
                             results = v
                             break
 
-            tv_al    = ["tv", "serie", "series", "show", "tvseries", "tvshow"]
-            movie_al = ["movie", "film"]
+            tv_al    = ["tv","serie","series","show","tvseries","tvshow"]
+            movie_al = ["movie","film"]
             aliases  = tv_al if media_type == "tv" else movie_al
 
             for item in results:
@@ -97,239 +92,161 @@ def get_naka_id(title: str, media_type: str, tmdb_id: str) -> str:
     return tmdb_id
 
 # ══════════════════════════════════════════════════════════════════
-#  SELENIUM — extraction M3U8
+#  PLAYWRIGHT — extraction M3U8
 # ══════════════════════════════════════════════════════════════════
 
-def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
-                 season: int = None, episode: int = None) -> str | None:
+async def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
+                       season: int = None, episode: int = None) -> str | None:
 
-    opts = Options()
-    opts.add_argument("--headless=new")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--disable-gpu")
-    opts.add_argument("--disable-software-rasterizer")
-    opts.add_argument("--window-size=1920,1080")
-    opts.add_argument("--autoplay-policy=no-user-gesture-required")
-    opts.add_argument("--disable-extensions")
-    opts.add_argument("--blink-settings=imagesEnabled=false")
-    opts.add_argument("--no-first-run")
-    opts.add_argument("--no-default-browser-check")
-    opts.add_argument("--disable-blink-features=AutomationControlled")
-    opts.add_argument("--disable-setuid-sandbox")
-    opts.add_argument("--ignore-certificate-errors")
-    opts.add_argument("--disable-background-networking")
-    opts.add_argument("--disable-default-apps")
-    opts.add_argument("--disable-sync")
-    opts.add_argument("--mute-audio")
-    opts.add_argument("--no-zygote")
-    opts.add_argument("--disable-renderer-backgrounding")
-    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-    opts.add_experimental_option("useAutomationExtension", False)
-    opts.add_experimental_option("prefs", {
-        "profile.managed_default_content_settings.images": 2,
-        "profile.managed_default_content_settings.fonts":  2,
-    })
-    opts.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+    meta    = get_tmdb_meta(tmdb_id, media_type)
+    title   = meta["title"]
+    poster  = meta["poster"]
+    naka_id = get_naka_id(title, media_type, tmdb_id)
 
-    driver = webdriver.Chrome(
-        service=Service(ChromeDriverManager().install()),
-        options=opts,
-    )
+    base = "https://nakastream.tv/player"
+    if media_type == "tv":
+        naka_url = (f"{base}?title={quote(title)}&id={naka_id}"
+                    f"&poster={quote(poster)}&type=tv"
+                    f"&season={season}&episode={episode}")
+        print(f"📂 Série — {title} | {naka_id} | S{season}E{episode}")
+    else:
+        naka_url = (f"{base}?title={quote(title)}&id={naka_id}"
+                    f"&poster={quote(poster)}&type=movie")
+        print(f"📂 Film — {title} | {naka_id}")
 
-    # Intercepte TOUTES les requêtes réseau via JS injecté
-    # Stocke les URLs m3u8 dans window.__m3u8_urls
-    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": """
-        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-        window.__m3u8_urls = [];
-        const origOpen = XMLHttpRequest.prototype.open;
-        XMLHttpRequest.prototype.open = function(method, url) {
-            if (url && url.includes('.m3u8')) {
-                window.__m3u8_urls.push(url);
-            }
-            return origOpen.apply(this, arguments);
-        };
-        const origFetch = window.fetch;
-        window.fetch = function(input, init) {
-            const url = typeof input === 'string' ? input : input.url;
-            if (url && url.includes('.m3u8')) {
-                window.__m3u8_urls.push(url);
-            }
-            return origFetch.apply(this, arguments);
-        };
-    """})
+    print(f"   🔗 {naka_url}")
 
-    driver.execute_cdp_cmd("Network.enable", {})
-    driver.execute_cdp_cmd("Network.setBlockedURLs", {"urls": [
-        "*doubleclick*", "*googlesyndication*", "*adservice*",
-        "*googletagmanager*", "*google-analytics*", "*facebook*",
-        "*hotjar*", "*clarity*",
-        "*.gif", "*.png", "*.jpg", "*.jpeg", "*.webp",
-        "*.woff", "*.woff2", "*.ttf",
-    ]})
+    m3u8_found = None
 
-    main_handle = driver.current_window_handle
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-software-rasterizer",
+                "--autoplay-policy=no-user-gesture-required",
+                "--mute-audio",
+                "--no-zygote",
+                "--disable-setuid-sandbox",
+            ]
+        )
 
-    # ── Helpers ───────────────────────────────────────────────────
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+            java_script_enabled=True,
+        )
 
-    def scan_m3u8() -> str | None:
-        # 1. Scan logs performance CDP
-        for entry in driver.get_log("performance"):
-            try:
-                log = json.loads(entry["message"])["message"]
-                if log.get("method") != "Network.requestWillBeSent":
-                    continue
-                url = log.get("params", {}).get("request", {}).get("url", "")
-                if ".m3u8" in url and ".ts" not in url:
-                    if any(q in url for q in ["720p","1080p","480p","360p","playlist"]):
-                        return url
-                    if "master" not in url and "manifest" not in url:
-                        return url
-            except Exception:
-                pass
+        # Bloque les ressources inutiles
+        await context.route("**/*.{png,jpg,jpeg,gif,webp,woff,woff2,ttf}", lambda r: r.abort())
+        await context.route("**/*doubleclick*", lambda r: r.abort())
+        await context.route("**/*googlesyndication*", lambda r: r.abort())
+        await context.route("**/*google-analytics*", lambda r: r.abort())
+        await context.route("**/*googletagmanager*", lambda r: r.abort())
+        await context.route("**/*facebook*", lambda r: r.abort())
 
-        # 2. Scan window.__m3u8_urls injecté
-        try:
-            urls = driver.execute_script("return window.__m3u8_urls || [];")
-            if urls:
-                return urls[0]
-        except Exception:
-            pass
+        page = await context.new_page()
 
-        return None
+        # Intercepte les requêtes réseau → cherche m3u8
+        def on_request(request):
+            nonlocal m3u8_found
+            url = request.url
+            if ".m3u8" in url and ".ts" not in url and m3u8_found is None:
+                print(f"   🎯 M3U8 intercepté : {url}")
+                m3u8_found = url
 
-    def kill_tabs() -> None:
-        for h in list(driver.window_handles):
-            if h != main_handle:
-                try:
-                    driver.switch_to.window(h)
-                    driver.close()
-                    print("   🗑️  Tab pub fermé")
-                except Exception:
-                    pass
-        driver.switch_to.window(main_handle)
+        page.on("request", on_request)
 
-    def click_text(texts: list) -> bool:
-        for text in texts:
-            try:
-                for el in driver.find_elements(By.XPATH, f"//*[contains(text(),'{text}')]"):
-                    if el.is_displayed():
-                        driver.execute_script("arguments[0].click();", el)
-                        print(f"   ✅ Clic '{text}'")
-                        return True
-            except Exception:
-                pass
-        return False
+        print("🚀 Chargement page...")
+        await page.goto(naka_url, wait_until="domcontentloaded", timeout=30000)
 
-    def click_js(texts: list) -> bool:
-        """Clic JS même si l'élément n'est pas visible — utile en headless."""
-        for text in texts:
-            try:
-                els = driver.find_elements(By.XPATH, f"//*[contains(text(),'{text}')]")
-                if els:
-                    driver.execute_script("arguments[0].click();", els[0])
-                    print(f"   ✅ Clic JS '{text}'")
-                    return True
-            except Exception:
-                pass
-        return False
-
-    def run(timeout: float = 60) -> str | None:
-        deadline        = time.time() + timeout
         clicked_lecture = False
         clicked_pub1    = False
         clicked_pub2    = False
         clicked_lancer  = False
 
+        deadline = time.time() + 60
+
         while time.time() < deadline:
-            m3u8 = scan_m3u8()
-            if m3u8:
-                return m3u8
+            # M3U8 trouvé → on sort
+            if m3u8_found:
+                break
 
-            kill_tabs()
+            # Ferme les popups/nouveaux onglets
+            for pg in context.pages:
+                if pg != page:
+                    await pg.close()
+                    print("   🗑️  Tab pub fermé")
 
-            # Essaie d'abord visible, puis JS forcé pour le headless
+            # Clics dans l'ordre
             if not clicked_lecture:
-                if click_text(["Lecture"]) or click_js(["Lecture"]):
-                    clicked_lecture = True
+                try:
+                    el = page.locator("text=Lecture").first
+                    if await el.is_visible(timeout=100):
+                        await el.click()
+                        clicked_lecture = True
+                        print("   ✅ Clic 'Lecture'")
+                except Exception:
+                    pass
 
             if not clicked_pub1:
-                if click_text(["Regarder la pub"]) or click_js(["Regarder la pub"]):
-                    clicked_pub1 = True
+                try:
+                    el = page.locator("text=Regarder la pub").first
+                    if await el.is_visible(timeout=100):
+                        await el.click()
+                        clicked_pub1 = True
+                        print("   ✅ Clic 'Regarder la pub' 1")
+                except Exception:
+                    pass
             elif clicked_pub1 and not clicked_pub2:
-                if click_text(["Regarder la pub"]) or click_js(["Regarder la pub"]):
-                    clicked_pub2 = True
+                try:
+                    el = page.locator("text=Regarder la pub").first
+                    if await el.is_visible(timeout=100):
+                        await el.click()
+                        clicked_pub2 = True
+                        print("   ✅ Clic 'Regarder la pub' 2")
+                except Exception:
+                    pass
 
             if not clicked_lancer:
-                if click_text(["Lancer la lecture", "Lancer"]) or click_js(["Lancer la lecture", "Lancer"]):
-                    clicked_lancer = True
+                try:
+                    el = page.locator("text=Lancer la lecture").first
+                    if await el.is_visible(timeout=100):
+                        await el.click()
+                        clicked_lancer = True
+                        print("   ✅ Clic 'Lancer la lecture'")
+                except Exception:
+                    pass
 
-            click_text(["Plus tard", "Fermer", "fermer", "plus tard"])
-            click_js(["Plus tard", "Fermer", "fermer", "plus tard"])
+            # Popup fermeture
+            for txt in ["Plus tard", "Fermer", "fermer", "plus tard"]:
+                try:
+                    el = page.locator(f"text={txt}").first
+                    if await el.is_visible(timeout=100):
+                        await el.click()
+                except Exception:
+                    pass
 
-            time.sleep(0.05)
+            await asyncio.sleep(0.05)
 
-        return None
+        await browser.close()
 
-    # ── Pipeline ──────────────────────────────────────────────────
-    try:
-        meta    = get_tmdb_meta(tmdb_id, media_type)
-        title   = meta["title"]
-        poster  = meta["poster"]
-        naka_id = get_naka_id(title, media_type, tmdb_id)
+    if m3u8_found:
+        print(f"✅ M3U8 : {m3u8_found}")
+        return m3u8_found
 
-        base = "https://nakastream.tv/player"
-        if media_type == "tv":
-            naka_url = (
-                f"{base}?title={quote(title)}&id={naka_id}"
-                f"&poster={quote(poster)}&type=tv"
-                f"&season={season}&episode={episode}"
-            )
-            print(f"📂 Série — {title} | {naka_id} | S{season}E{episode}")
-        else:
-            naka_url = (
-                f"{base}?title={quote(title)}&id={naka_id}"
-                f"&poster={quote(poster)}&type=movie"
-            )
-            print(f"📂 Film — {title} | {naka_id}")
-
-        print(f"   🔗 {naka_url}")
-        driver.get(naka_url)
-
-        print("🚀 Boucle principale...")
-        m3u8 = run(timeout=60)
-
-        if m3u8:
-            print(f"✅ M3U8 : {m3u8}")
-            threading.Thread(target=driver.quit, daemon=True).start()
-            return m3u8
-
-        # Debug : affiche le HTML si rien trouvé
-        print("❌ M3U8 introuvable")
-        print(f"   🔍 HTML (extrait) : {driver.page_source[:500]}")
-        return None
-
-    except Exception as e:
-        print(f"❌ Exception : {e}")
-        driver.quit()
-        raise
+    print("❌ M3U8 introuvable")
+    return None
 
 # ══════════════════════════════════════════════════════════════════
 #  ENDPOINTS
 # ══════════════════════════════════════════════════════════════════
 
-async def _run(tmdb_id: str, media_type: str,
-               season: int = None, episode: int = None) -> str | None:
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        None,
-        lambda: get_m3u8_url(tmdb_id, media_type, season, episode)
-    )
-
 @app.get("/m3u8/movie/{tmdb_id}")
 async def get_movie_stream(tmdb_id: str):
     print(f"\n{'='*55}\n🎬 Film — {tmdb_id}\n{'='*55}")
-    url = await _run(tmdb_id, "movie")
+    url = await get_m3u8_url(tmdb_id, "movie")
     if not url:
         raise HTTPException(status_code=404, detail="M3U8 introuvable")
     return JSONResponse({"url": url}, headers={"Cache-Control": "no-store"})
@@ -337,7 +254,7 @@ async def get_movie_stream(tmdb_id: str):
 @app.get("/m3u8/tv/{tmdb_id}/{season}/{episode}")
 async def get_tv_stream(tmdb_id: str, season: int, episode: int):
     print(f"\n{'='*55}\n📺 Série — {tmdb_id} S{season}E{episode}\n{'='*55}")
-    url = await _run(tmdb_id, "tv", season, episode)
+    url = await get_m3u8_url(tmdb_id, "tv", season, episode)
     if not url:
         raise HTTPException(status_code=404, detail="M3U8 introuvable")
     return JSONResponse({"url": url}, headers={"Cache-Control": "no-store"})
