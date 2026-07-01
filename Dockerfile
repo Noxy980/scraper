@@ -2,7 +2,8 @@ FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    PORT=8000
 
 RUN apt-get update && apt-get install -y \
     wget \
@@ -42,8 +43,7 @@ RUN playwright install-deps chromium
 
 COPY scraper.py .
 
-ENV PORT=8000
-
 EXPOSE 8000
 
-CMD ["python", "scraper.py"]
+# Lance directement uvicorn (plus fiable que python scraper.py)
+CMD ["uvicorn", "scraper:app", "--host", "0.0.0.0", "--port", "8000"]
