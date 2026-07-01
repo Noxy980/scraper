@@ -1,0 +1,12 @@
+{  
+  "build": {  
+    "dockerfile": "Dockerfile"  
+  },  
+  "deploy": {  
+    "startCommand": "python scraper.py",  
+    "healthcheckPath": "/health",  
+    "healthcheckTimeout": 120,  
+    "restartPolicyType": "ON_FAILURE",  
+    "restartPolicyMaxRetries": 5  
+  }  
+}  
