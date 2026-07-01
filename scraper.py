@@ -121,7 +121,6 @@ def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
     opts.add_argument("--disable-background-networking")
     opts.add_argument("--disable-default-apps")
     opts.add_argument("--disable-sync")
-    opts.add_argument("--metrics-recording-only")
     opts.add_argument("--mute-audio")
     opts.add_argument("--no-zygote")
     opts.add_argument("--disable-renderer-backgrounding")
@@ -137,8 +136,29 @@ def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
         service=Service(ChromeDriverManager().install()),
         options=opts,
     )
-    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument",
-        {"source": "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"})
+
+    # Intercepte TOUTES les requêtes réseau via JS injecté
+    # Stocke les URLs m3u8 dans window.__m3u8_urls
+    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": """
+        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+        window.__m3u8_urls = [];
+        const origOpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(method, url) {
+            if (url && url.includes('.m3u8')) {
+                window.__m3u8_urls.push(url);
+            }
+            return origOpen.apply(this, arguments);
+        };
+        const origFetch = window.fetch;
+        window.fetch = function(input, init) {
+            const url = typeof input === 'string' ? input : input.url;
+            if (url && url.includes('.m3u8')) {
+                window.__m3u8_urls.push(url);
+            }
+            return origFetch.apply(this, arguments);
+        };
+    """})
+
     driver.execute_cdp_cmd("Network.enable", {})
     driver.execute_cdp_cmd("Network.setBlockedURLs", {"urls": [
         "*doubleclick*", "*googlesyndication*", "*adservice*",
@@ -153,20 +173,29 @@ def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
     # ── Helpers ───────────────────────────────────────────────────
 
     def scan_m3u8() -> str | None:
+        # 1. Scan logs performance CDP
         for entry in driver.get_log("performance"):
             try:
                 log = json.loads(entry["message"])["message"]
                 if log.get("method") != "Network.requestWillBeSent":
                     continue
                 url = log.get("params", {}).get("request", {}).get("url", "")
-                if ".m3u8" not in url or ".ts" in url:
-                    continue
-                if any(q in url for q in ["720p", "1080p", "480p", "360p", "playlist"]):
-                    return url
-                if "master" not in url and "manifest" not in url:
-                    return url
+                if ".m3u8" in url and ".ts" not in url:
+                    if any(q in url for q in ["720p","1080p","480p","360p","playlist"]):
+                        return url
+                    if "master" not in url and "manifest" not in url:
+                        return url
             except Exception:
                 pass
+
+        # 2. Scan window.__m3u8_urls injecté
+        try:
+            urls = driver.execute_script("return window.__m3u8_urls || [];")
+            if urls:
+                return urls[0]
+        except Exception:
+            pass
+
         return None
 
     def kill_tabs() -> None:
@@ -192,6 +221,19 @@ def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
                 pass
         return False
 
+    def click_js(texts: list) -> bool:
+        """Clic JS même si l'élément n'est pas visible — utile en headless."""
+        for text in texts:
+            try:
+                els = driver.find_elements(By.XPATH, f"//*[contains(text(),'{text}')]")
+                if els:
+                    driver.execute_script("arguments[0].click();", els[0])
+                    print(f"   ✅ Clic JS '{text}'")
+                    return True
+            except Exception:
+                pass
+        return False
+
     def run(timeout: float = 60) -> str | None:
         deadline        = time.time() + timeout
         clicked_lecture = False
@@ -206,22 +248,24 @@ def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
 
             kill_tabs()
 
+            # Essaie d'abord visible, puis JS forcé pour le headless
             if not clicked_lecture:
-                if click_text(["Lecture"]):
+                if click_text(["Lecture"]) or click_js(["Lecture"]):
                     clicked_lecture = True
 
             if not clicked_pub1:
-                if click_text(["Regarder la pub"]):
+                if click_text(["Regarder la pub"]) or click_js(["Regarder la pub"]):
                     clicked_pub1 = True
             elif clicked_pub1 and not clicked_pub2:
-                if click_text(["Regarder la pub"]):
+                if click_text(["Regarder la pub"]) or click_js(["Regarder la pub"]):
                     clicked_pub2 = True
 
             if not clicked_lancer:
-                if click_text(["Lancer la lecture", "Lancer"]):
+                if click_text(["Lancer la lecture", "Lancer"]) or click_js(["Lancer la lecture", "Lancer"]):
                     clicked_lancer = True
 
             click_text(["Plus tard", "Fermer", "fermer", "plus tard"])
+            click_js(["Plus tard", "Fermer", "fermer", "plus tard"])
 
             time.sleep(0.05)
 
@@ -260,10 +304,13 @@ def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
             threading.Thread(target=driver.quit, daemon=True).start()
             return m3u8
 
+        # Debug : affiche le HTML si rien trouvé
         print("❌ M3U8 introuvable")
+        print(f"   🔍 HTML (extrait) : {driver.page_source[:500]}")
         return None
 
-    except Exception:
+    except Exception as e:
+        print(f"❌ Exception : {e}")
         driver.quit()
         raise
 
