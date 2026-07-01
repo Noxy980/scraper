@@ -274,4 +274,11 @@ if __name__ == "__main__":
     print("   GET /m3u8/movie/{tmdb_id}")
     print("   GET /m3u8/tv/{tmdb_id}/{season}/{episode}")
     print("=" * 55)
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    import os  
+  
+if __name__ == "__main__":  
+    print("=" * 55)  
+    print("   🎬  Nexora FR — Streaming API  ⚡")  
+    print("=" * 55)  
+    port = int(os.environ.get("PORT", 8000))  # ← lit le PORT de Railway  
+    uvicorn.run(app, host="0.0.0.0", port=port)  
