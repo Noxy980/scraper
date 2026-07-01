@@ -1,6 +1,5 @@
 import os
 import re
-import asyncio
 import requests
 import httpx
 from urllib.parse import quote
@@ -35,13 +34,13 @@ HEADERS = {
 #  HEALTH CHECK
 # ══════════════════════════════════════════════════════════════════
 
-@app.get("/health")
 @app.get("/")
+async def root():
+    return JSONResponse(status_code=200, content={"status": "ok"})
+
+@app.get("/health")
 async def health_check():
-    return JSONResponse(
-        status_code=200,
-        content={"status": "ok", "message": "Nexora FR API is running"}
-    )
+    return JSONResponse(status_code=200, content={"status": "ok"})
 
 # ══════════════════════════════════════════════════════════════════
 #  TMDB
@@ -97,9 +96,9 @@ def get_naka_id(title: str, media_type: str, tmdb_id: str) -> str:
                             results = v
                             break
 
-            tv_aliases    = ["tv", "serie", "series", "show", "tvseries", "tvshow"]
-            movie_aliases = ["movie", "film"]
-            aliases       = tv_aliases if media_type == "tv" else movie_aliases
+            tv_al    = ["tv", "serie", "series", "show", "tvseries", "tvshow"]
+            movie_al = ["movie", "film"]
+            aliases  = tv_al if media_type == "tv" else movie_al
 
             for item in results:
                 itype = str(item.get("type") or item.get("media_type") or "").lower()
@@ -120,7 +119,7 @@ def get_naka_id(title: str, media_type: str, tmdb_id: str) -> str:
     return tmdb_id
 
 # ══════════════════════════════════════════════════════════════════
-#  HELPERS — extraction M3U8
+#  HELPERS
 # ══════════════════════════════════════════════════════════════════
 
 def find_m3u8_in_dict(data, depth=0):
@@ -162,181 +161,132 @@ def extract_m3u8_from_html(html: str):
     return None
 
 # ══════════════════════════════════════════════════════════════════
-#  ÉTAPE 1 — API directe Nakastream
+#  ÉTAPE 1 — API directe
 # ══════════════════════════════════════════════════════════════════
 
 async def get_m3u8_from_naka_api(
-    naka_id: str,
-    media_type: str,
-    title: str,
-    poster: str,
-    season: int = None,
-    episode: int = None,
+    naka_id, media_type, title, poster, season=None, episode=None
 ):
-    if media_type == "tv":
-        endpoints = [
+    endpoints = (
+        [
             f"https://nakastream.tv/api/v1/stream/tv/{naka_id}/{season}/{episode}",
             f"https://nakastream.tv/api/v1/video/tv/{naka_id}/{season}/{episode}",
             f"https://nakastream.tv/api/v1/episode/{naka_id}/{season}/{episode}/stream",
             f"https://nakastream.tv/api/v1/contents/{naka_id}/stream?season={season}&episode={episode}",
             f"https://nakastream.tv/api/v1/watch/{naka_id}?type=tv&season={season}&episode={episode}",
         ]
-    else:
-        endpoints = [
+        if media_type == "tv"
+        else [
             f"https://nakastream.tv/api/v1/stream/movie/{naka_id}",
             f"https://nakastream.tv/api/v1/video/movie/{naka_id}",
             f"https://nakastream.tv/api/v1/movie/{naka_id}/stream",
             f"https://nakastream.tv/api/v1/contents/{naka_id}/stream?type=movie",
             f"https://nakastream.tv/api/v1/watch/{naka_id}?type=movie",
         ]
+    )
 
     async with httpx.AsyncClient(
-        headers=HEADERS,
-        follow_redirects=True,
-        timeout=15,
+        headers=HEADERS, follow_redirects=True, timeout=15
     ) as client:
-        for endpoint in endpoints:
+        for ep in endpoints:
             try:
-                print(f"   🔎 Test API : {endpoint}")
-                res = await client.get(endpoint)
-                print(f"      → status {res.status_code}")
-
-                if res.status_code == 200:
+                print(f"   🔎 {ep}")
+                r = await client.get(ep)
+                print(f"      → {r.status_code}")
+                if r.status_code == 200:
                     try:
-                        data  = res.json()
-                        m3u8  = find_m3u8_in_dict(data)
+                        m3u8 = find_m3u8_in_dict(r.json())
                         if m3u8:
-                            print(f"   ✅ M3U8 via API JSON : {m3u8}")
                             return m3u8
                     except Exception:
                         pass
-
-                    m3u8 = extract_m3u8_from_html(res.text)
+                    m3u8 = extract_m3u8_from_html(r.text)
                     if m3u8:
-                        print(f"   ✅ M3U8 via API HTML : {m3u8}")
                         return m3u8
-
             except Exception as e:
                 print(f"      → erreur : {e}")
-
     return None
 
 # ══════════════════════════════════════════════════════════════════
-#  ÉTAPE 2 — Page player + iframes + scripts JS
+#  ÉTAPE 2 — Page player
 # ══════════════════════════════════════════════════════════════════
 
 async def get_m3u8_from_player_page(
-    naka_id: str,
-    media_type: str,
-    title: str,
-    poster: str,
-    season: int = None,
-    episode: int = None,
+    naka_id, media_type, title, poster, season=None, episode=None
 ):
     base = "https://nakastream.tv/player"
-    if media_type == "tv":
-        url = (
-            f"{base}?title={quote(title)}&id={naka_id}"
-            f"&poster={quote(poster)}&type=tv"
-            f"&season={season}&episode={episode}"
-        )
-    else:
-        url = (
-            f"{base}?title={quote(title)}&id={naka_id}"
-            f"&poster={quote(poster)}&type=movie"
-        )
-
-    print(f"   🔗 Player URL : {url}")
+    url  = (
+        f"{base}?title={quote(title)}&id={naka_id}"
+        f"&poster={quote(poster)}&type=tv&season={season}&episode={episode}"
+        if media_type == "tv"
+        else f"{base}?title={quote(title)}&id={naka_id}"
+             f"&poster={quote(poster)}&type=movie"
+    )
+    print(f"   🔗 {url}")
 
     async with httpx.AsyncClient(
-        headers=HEADERS,
-        follow_redirects=True,
-        timeout=20,
+        headers=HEADERS, follow_redirects=True, timeout=20
     ) as client:
         try:
-            res = await client.get(url)
-            print(f"   📄 Player status : {res.status_code}")
-
-            if res.status_code != 200:
+            r = await client.get(url)
+            print(f"   📄 status : {r.status_code}")
+            if r.status_code != 200:
                 return None
 
-            html = res.text
-
-            # Cherche m3u8 direct dans le HTML
+            html = r.text
             m3u8 = extract_m3u8_from_html(html)
             if m3u8:
                 return m3u8
 
-            # Cherche dans les iframes
-            iframes = re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', html)
-            for iframe_url in iframes:
-                print(f"   🖼️  Iframe : {iframe_url}")
+            for iframe_url in re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', html):
                 if not iframe_url.startswith("http"):
                     iframe_url = "https://nakastream.tv" + iframe_url
                 try:
-                    r = await client.get(iframe_url)
-                    if r.status_code == 200:
-                        m3u8 = extract_m3u8_from_html(r.text)
+                    ir = await client.get(iframe_url)
+                    if ir.status_code == 200:
+                        m3u8 = extract_m3u8_from_html(ir.text)
                         if m3u8:
-                            print(f"   ✅ M3U8 iframe : {m3u8}")
                             return m3u8
-                except Exception as e:
-                    print(f"      → iframe erreur : {e}")
+                except Exception:
+                    pass
 
-            # Cherche dans les scripts JS liés au player
-            scripts = re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', html)
-            for script_url in scripts:
-                if any(kw in script_url for kw in ["player", "video", "stream", "hls"]):
-                    if not script_url.startswith("http"):
-                        script_url = "https://nakastream.tv" + script_url
+            for src in re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', html):
+                if any(k in src for k in ["player", "video", "stream", "hls"]):
+                    if not src.startswith("http"):
+                        src = "https://nakastream.tv" + src
                     try:
-                        print(f"   📜 Script JS : {script_url}")
-                        r = await client.get(script_url)
-                        if r.status_code == 200:
-                            m3u8 = extract_m3u8_from_html(r.text)
+                        jr = await client.get(src)
+                        if jr.status_code == 200:
+                            m3u8 = extract_m3u8_from_html(jr.text)
                             if m3u8:
-                                print(f"   ✅ M3U8 JS : {m3u8}")
                                 return m3u8
-                    except Exception as e:
-                        print(f"      → script erreur : {e}")
+                    except Exception:
+                        pass
 
         except Exception as e:
-            print(f"   ❌ Player page erreur : {e}")
-
+            print(f"   ❌ {e}")
     return None
 
 # ══════════════════════════════════════════════════════════════════
 #  ORCHESTRATEUR
 # ══════════════════════════════════════════════════════════════════
 
-async def get_m3u8_url(
-    tmdb_id: str,
-    media_type: str = "movie",
-    season: int = None,
-    episode: int = None,
-):
+async def get_m3u8_url(tmdb_id, media_type="movie", season=None, episode=None):
     meta    = get_tmdb_meta(tmdb_id, media_type)
     title   = meta["title"]
     poster  = meta["poster"]
     naka_id = get_naka_id(title, media_type, tmdb_id)
 
-    if media_type == "tv":
-        print(f"📂 Série — {title} | id:{naka_id} | S{season}E{episode}")
-    else:
-        print(f"📂 Film  — {title} | id:{naka_id}")
+    print(f"📂 {'Série' if media_type == 'tv' else 'Film'} — {title} | {naka_id}")
 
-    print("\n--- Étape 1 : API directe ---")
-    m3u8 = await get_m3u8_from_naka_api(
-        naka_id, media_type, title, poster, season, episode
-    )
+    m3u8 = await get_m3u8_from_naka_api(naka_id, media_type, title, poster, season, episode)
     if m3u8:
+        print(f"✅ M3U8 : {m3u8}")
         return m3u8
 
-    print("\n--- Étape 2 : Page player ---")
-    m3u8 = await get_m3u8_from_player_page(
-        naka_id, media_type, title, poster, season, episode
-    )
+    m3u8 = await get_m3u8_from_player_page(naka_id, media_type, title, poster, season, episode)
     if m3u8:
+        print(f"✅ M3U8 : {m3u8}")
         return m3u8
 
     print("❌ M3U8 introuvable")
@@ -348,7 +298,7 @@ async def get_m3u8_url(
 
 @app.get("/m3u8/movie/{tmdb_id}")
 async def get_movie_stream(tmdb_id: str):
-    print(f"\n{'='*55}\n🎬  Film — {tmdb_id}\n{'='*55}")
+    print(f"\n{'='*55}\n🎬 Film — {tmdb_id}\n{'='*55}")
     url = await get_m3u8_url(tmdb_id, "movie")
     if not url:
         raise HTTPException(status_code=404, detail="M3U8 introuvable")
@@ -357,7 +307,7 @@ async def get_movie_stream(tmdb_id: str):
 
 @app.get("/m3u8/tv/{tmdb_id}/{season}/{episode}")
 async def get_tv_stream(tmdb_id: str, season: int, episode: int):
-    print(f"\n{'='*55}\n📺  Série — {tmdb_id} S{season}E{episode}\n{'='*55}")
+    print(f"\n{'='*55}\n📺 Série — {tmdb_id} S{season}E{episode}\n{'='*55}")
     url = await get_m3u8_url(tmdb_id, "tv", season, episode)
     if not url:
         raise HTTPException(status_code=404, detail="M3U8 introuvable")
@@ -369,16 +319,10 @@ async def get_stream_legacy(tmdb_id: str):
     return await get_movie_stream(tmdb_id)
 
 # ══════════════════════════════════════════════════════════════════
-#  MAIN
+#  MAIN — Railway lit $PORT automatiquement
 # ══════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    print("=" * 55)
-    print("   🎬  Nexora FR — Streaming API  ⚡")
-    print("=" * 55)
-    print("   GET /health")
-    print("   GET /m3u8/movie/{tmdb_id}")
-    print("   GET /m3u8/tv/{tmdb_id}/{season}/{episode}")
-    print("=" * 55)
     port = int(os.environ.get("PORT", 8000))
+    print(f"🚀 Démarrage sur port {port}")
     uvicorn.run("scraper:app", host="0.0.0.0", port=port)
