@@ -1,3 +1,4 @@
+import os
 import time
 import json
 import asyncio
@@ -130,12 +131,14 @@ async def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
                 "--mute-audio",
                 "--no-zygote",
                 "--disable-setuid-sandbox",
+                "--disable-background-networking",
+                "--disable-default-apps",
+                "--disable-sync",
             ]
         )
 
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-            java_script_enabled=True,
         )
 
         # Bloque les ressources inutiles
@@ -165,21 +168,18 @@ async def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
         clicked_pub1    = False
         clicked_pub2    = False
         clicked_lancer  = False
-
-        deadline = time.time() + 60
+        deadline        = time.time() + 60
 
         while time.time() < deadline:
-            # M3U8 trouvé → on sort
             if m3u8_found:
                 break
 
-            # Ferme les popups/nouveaux onglets
+            # Ferme les onglets pub
             for pg in context.pages:
                 if pg != page:
                     await pg.close()
                     print("   🗑️  Tab pub fermé")
 
-            # Clics dans l'ordre
             if not clicked_lecture:
                 try:
                     el = page.locator("text=Lecture").first
@@ -196,7 +196,7 @@ async def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
                     if await el.is_visible(timeout=100):
                         await el.click()
                         clicked_pub1 = True
-                        print("   ✅ Clic 'Regarder la pub' 1")
+                        print("   ✅ Clic 'Pub 1'")
                 except Exception:
                     pass
             elif clicked_pub1 and not clicked_pub2:
@@ -205,7 +205,7 @@ async def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
                     if await el.is_visible(timeout=100):
                         await el.click()
                         clicked_pub2 = True
-                        print("   ✅ Clic 'Regarder la pub' 2")
+                        print("   ✅ Clic 'Pub 2'")
                 except Exception:
                     pass
 
@@ -219,7 +219,6 @@ async def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
                 except Exception:
                     pass
 
-            # Popup fermeture
             for txt in ["Plus tard", "Fermer", "fermer", "plus tard"]:
                 try:
                     el = page.locator(f"text={txt}").first
@@ -274,11 +273,5 @@ if __name__ == "__main__":
     print("   GET /m3u8/movie/{tmdb_id}")
     print("   GET /m3u8/tv/{tmdb_id}/{season}/{episode}")
     print("=" * 55)
-    import os  
-  
-if __name__ == "__main__":  
-    print("=" * 55)  
-    print("   🎬  Nexora FR — Streaming API  ⚡")  
-    print("=" * 55)  
-    port = int(os.environ.get("PORT", 8000))  # ← lit le PORT de Railway  
-    uvicorn.run(app, host="0.0.0.0", port=port)  
+    port = int(os.environ.get("PORT", 8080))
+    uvicorn.run(app, host="0.0.0.0", port=port)
