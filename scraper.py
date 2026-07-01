@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from selenium import webdriver
-from selenium.webdriver.common.by import By
+from selenium.webdriver.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
@@ -33,8 +33,11 @@ NAKA_HEADERS = {
 def get_tmdb_meta(tmdb_id: str, media_type: str) -> dict:
     try:
         kind = "movie" if media_type == "movie" else "tv"
-        res  = requests.get(f"{TMDB_BASE}/{kind}/{tmdb_id}",
-                            params={"api_key": TMDB_KEY, "language": "en-US"}, timeout=8)
+        res  = requests.get(
+            f"{TMDB_BASE}/{kind}/{tmdb_id}",
+            params={"api_key": TMDB_KEY, "language": "en-US"},
+            timeout=8,
+        )
         if res.ok:
             data   = res.json()
             title  = data.get("title") or data.get("name") or ""
@@ -53,24 +56,30 @@ def get_naka_id(title: str, media_type: str, tmdb_id: str) -> str:
     if not title:
         return tmdb_id
     try:
-        res = requests.get("https://nakastream.tv/api/v1/browse/search",
-                           params={"q": title}, headers=NAKA_HEADERS, timeout=10)
+        res = requests.get(
+            "https://nakastream.tv/api/v1/browse/search",
+            params={"q": title},
+            headers=NAKA_HEADERS,
+            timeout=10,
+        )
         if res.ok:
             data    = res.json()
             results = []
             if isinstance(data, list):
                 results = data
             elif isinstance(data, dict):
-                for key in ["results","data","items","movies","series","contents"]:
+                for key in ["results", "data", "items", "movies", "series", "contents"]:
                     if key in data and isinstance(data[key], list):
-                        results = data[key]; break
+                        results = data[key]
+                        break
                 if not results:
                     for v in data.values():
                         if isinstance(v, list) and v:
-                            results = v; break
+                            results = v
+                            break
 
-            tv_al    = ["tv","serie","series","show","tvseries","tvshow"]
-            movie_al = ["movie","film"]
+            tv_al    = ["tv", "serie", "series", "show", "tvseries", "tvshow"]
+            movie_al = ["movie", "film"]
             aliases  = tv_al if media_type == "tv" else movie_al
 
             for item in results:
@@ -99,6 +108,7 @@ def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-gpu")
+    opts.add_argument("--disable-software-rasterizer")
     opts.add_argument("--window-size=1920,1080")
     opts.add_argument("--autoplay-policy=no-user-gesture-required")
     opts.add_argument("--disable-extensions")
@@ -106,10 +116,15 @@ def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
     opts.add_argument("--no-first-run")
     opts.add_argument("--no-default-browser-check")
     opts.add_argument("--disable-blink-features=AutomationControlled")
-    opts.add_argument("--remote-debugging-port=9222")
     opts.add_argument("--disable-setuid-sandbox")
-    opts.add_argument("--single-process")
     opts.add_argument("--ignore-certificate-errors")
+    opts.add_argument("--disable-background-networking")
+    opts.add_argument("--disable-default-apps")
+    opts.add_argument("--disable-sync")
+    opts.add_argument("--metrics-recording-only")
+    opts.add_argument("--mute-audio")
+    opts.add_argument("--no-zygote")
+    opts.add_argument("--disable-renderer-backgrounding")
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
     opts.add_experimental_option("prefs", {
@@ -126,10 +141,11 @@ def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
         {"source": "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"})
     driver.execute_cdp_cmd("Network.enable", {})
     driver.execute_cdp_cmd("Network.setBlockedURLs", {"urls": [
-        "*doubleclick*","*googlesyndication*","*adservice*",
-        "*googletagmanager*","*google-analytics*","*facebook*",
-        "*hotjar*","*clarity*",
-        "*.gif","*.png","*.jpg","*.jpeg","*.webp","*.woff","*.woff2","*.ttf",
+        "*doubleclick*", "*googlesyndication*", "*adservice*",
+        "*googletagmanager*", "*google-analytics*", "*facebook*",
+        "*hotjar*", "*clarity*",
+        "*.gif", "*.png", "*.jpg", "*.jpeg", "*.webp",
+        "*.woff", "*.woff2", "*.ttf",
     ]})
 
     main_handle = driver.current_window_handle
@@ -145,7 +161,7 @@ def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
                 url = log.get("params", {}).get("request", {}).get("url", "")
                 if ".m3u8" not in url or ".ts" in url:
                     continue
-                if any(q in url for q in ["720p","1080p","480p","360p","playlist"]):
+                if any(q in url for q in ["720p", "1080p", "480p", "360p", "playlist"]):
                     return url
                 if "master" not in url and "manifest" not in url:
                     return url
@@ -220,13 +236,17 @@ def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
 
         base = "https://nakastream.tv/player"
         if media_type == "tv":
-            naka_url = (f"{base}?title={quote(title)}&id={naka_id}"
-                        f"&poster={quote(poster)}&type=tv"
-                        f"&season={season}&episode={episode}")
+            naka_url = (
+                f"{base}?title={quote(title)}&id={naka_id}"
+                f"&poster={quote(poster)}&type=tv"
+                f"&season={season}&episode={episode}"
+            )
             print(f"📂 Série — {title} | {naka_id} | S{season}E{episode}")
         else:
-            naka_url = (f"{base}?title={quote(title)}&id={naka_id}"
-                        f"&poster={quote(poster)}&type=movie")
+            naka_url = (
+                f"{base}?title={quote(title)}&id={naka_id}"
+                f"&poster={quote(poster)}&type=movie"
+            )
             print(f"📂 Film — {title} | {naka_id}")
 
         print(f"   🔗 {naka_url}")
