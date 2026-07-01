@@ -6,7 +6,7 @@ import threading
 from urllib.parse import quote
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
@@ -26,6 +26,10 @@ NAKA_HEADERS = {
     "Accept":  "application/json",
 }
 
+# ══════════════════════════════════════════════════════════════════
+#  TMDB
+# ══════════════════════════════════════════════════════════════════
+
 def get_tmdb_meta(tmdb_id: str, media_type: str) -> dict:
     try:
         kind = "movie" if media_type == "movie" else "tv"
@@ -40,6 +44,10 @@ def get_tmdb_meta(tmdb_id: str, media_type: str) -> dict:
     except Exception as e:
         print(f"   ⚠️ TMDB: {e}")
     return {"title": "", "poster": ""}
+
+# ══════════════════════════════════════════════════════════════════
+#  NAKASTREAM — ID interne
+# ══════════════════════════════════════════════════════════════════
 
 def get_naka_id(title: str, media_type: str, tmdb_id: str) -> str:
     if not title:
@@ -79,10 +87,15 @@ def get_naka_id(title: str, media_type: str, tmdb_id: str) -> str:
         print(f"   ❌ Naka search: {e}")
     return tmdb_id
 
+# ══════════════════════════════════════════════════════════════════
+#  SELENIUM — extraction M3U8
+# ══════════════════════════════════════════════════════════════════
+
 def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
                  season: int = None, episode: int = None) -> str | None:
 
     opts = Options()
+    opts.add_argument("--headless=new")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-gpu")
@@ -93,6 +106,10 @@ def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
     opts.add_argument("--no-first-run")
     opts.add_argument("--no-default-browser-check")
     opts.add_argument("--disable-blink-features=AutomationControlled")
+    opts.add_argument("--remote-debugging-port=9222")
+    opts.add_argument("--disable-setuid-sandbox")
+    opts.add_argument("--single-process")
+    opts.add_argument("--ignore-certificate-errors")
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
     opts.add_experimental_option("prefs", {
@@ -101,7 +118,10 @@ def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
     })
     opts.set_capability("goog:loggingPrefs", {"performance": "ALL"})
 
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=opts)
+    driver = webdriver.Chrome(
+        service=Service(ChromeDriverManager().install()),
+        options=opts,
+    )
     driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument",
         {"source": "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"})
     driver.execute_cdp_cmd("Network.enable", {})
@@ -113,6 +133,8 @@ def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
     ]})
 
     main_handle = driver.current_window_handle
+
+    # ── Helpers ───────────────────────────────────────────────────
 
     def scan_m3u8() -> str | None:
         for entry in driver.get_log("performance"):
@@ -189,6 +211,7 @@ def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
 
         return None
 
+    # ── Pipeline ──────────────────────────────────────────────────
     try:
         meta    = get_tmdb_meta(tmdb_id, media_type)
         title   = meta["title"]
@@ -214,7 +237,6 @@ def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
 
         if m3u8:
             print(f"✅ M3U8 : {m3u8}")
-            # ── Quitte le driver en arrière-plan pour ne pas bloquer ──
             threading.Thread(target=driver.quit, daemon=True).start()
             return m3u8
 
@@ -224,7 +246,6 @@ def get_m3u8_url(tmdb_id: str, media_type: str = "movie",
     except Exception:
         driver.quit()
         raise
-
 
 # ══════════════════════════════════════════════════════════════════
 #  ENDPOINTS
